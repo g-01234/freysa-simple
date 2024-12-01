@@ -1,9 +1,6 @@
 # Model configurations
 models:
-  # default: "anthropic/claude-3-5-sonnet-20241022"
-  targets: ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"]
-  # default: "groq/llama-3.2-90b-vision-preview"
-  judge: "groq/llama-3.1-70b-versatile"
+  targets: ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-latest"]
 
 # Directories
 directories:
@@ -15,13 +12,14 @@ workers: 3
 # Prompt inclusion/exclusion settings
 prompts:
   system:
-    target_include: ["sys_freysa.yaml"] # List of system prompt files to include
+    target_include: ["sys_freysa_act_1.yaml", "sys_freysa_act_2.json"] # List of system prompt files to include
     # target_exclude: [] # List of system prompt files to exclude
-    example_include: ["sys_example.yaml"]
   user:
-    target_include: ["user_freysa.yaml", "user_act2_winner.json"] # List of user prompt files to include
+    target_include: [
+        "user_freysa_act_1_winner.yaml",
+        "user_freysa_act_2_winner.json",
+      ] # List of user prompt files to include
     # target_exclude: ["1.yaml"] # List of user prompt files to exclude
-    example_include: ["user_example.json"]
 prompt_settings:
   temperature:
   top_p:

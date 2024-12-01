@@ -1,133 +1,61 @@
-# LLM Puzzle Game Testing Framework - Freysa Challenge
+import os
+import yaml
+from litellm import completion, ModelResponse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+from dataclasses import dataclass
+from typing import Any, Optional
 
-A streamlined testing framework for experimenting with the [Freysa AI puzzle game](https://www.freysa.ai/genesis/faq). This tool allows systematic testing of prompt combinations against multiple LLM models in parallel.
+# Load config
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
-## Overview
+PROMPTS_DIR = config["directories"]["prompts"]
+PROMPTS_USER_DIR = os.path.join(PROMPTS_DIR, "user")
+PROMPTS_SYSTEM_DIR = os.path.join(PROMPTS_DIR, "system")
+WORKERS = config.get("workers", 3)
 
-This framework enables:
 
-- Pairwise testing of system and user prompts
-- Parallel execution across multiple LLM models
-- Configurable prompt filtering and model selection
-- Structured output formatting with token usage statistics
-- Tool call tracking and visualization
+@dataclass
+class Generation:
+    """Represents a single generation result from an LLM model.
 
-## Setup
+    Attributes:
+        prompt_id (str): Unique identifier for the prompt combination.
+        model (str): Name of the LLM model used for generation.
+        response (ModelResponse): Response object from the LLM containing
+            completion, token usage, and tool calls if applicable.
+    """
 
-### Prerequisites
+    prompt_id: str
+    model: str
+    response: ModelResponse
 
-- Python 3.12+
-- [uv](https://github.com/astral-sh/uv) (recommended) or pip
 
-### Installation
+@dataclass
+class Prompt:
+    """Configuration for a prompt to be sent to LLM models.
 
-1. Clone the repository:
+    Attributes:
+        prompt_id (str): Unique identifier for the prompt combination.
+        messages (list[dict[str, Any]]): List of message dictionaries containing
+            the conversation context.
+        tools (Optional[list[dict[str, Any]]], optional): Function calling tools
+            available to the model. Defaults to None.
+        tool_choice (Union[str, dict[str, Any], None], optional): Tool selection mode.
+            Can be "none", "auto", or a specific function. Defaults to None.
+        temperature (Optional[float], optional): Sampling temperature. Defaults to None.
+        top_p (Optional[float], optional): Nucleus sampling parameter. Defaults to None.
+    """
 
-```bash
-git clone <repository-url>
-cd <repository-name>
-```
+    prompt_id: str
+    messages: list[dict[str, Any]]
+    tools: Optional[list[dict[str, Any]]] = None
+    tool_choice: str | dict[str, Any] | None = None
+    temperature: float | None = None
+    top_p: float | None = None
 
-2. Create a virtual environment and install dependencies:
 
-```bash
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv sync
-```
-
-3. Create a `.env` file with your API keys:
-
-```bash
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### Configuration
-
-The system is configured through `config.yaml`. Key settings include:
-
-- Model targets
-- Prompt directories
-- Include/exclude filters for prompts
-- Number of parallel workers
-- Model-specific parameters
-
-Example configuration:
-
-```yaml
-models:
-  targets: ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-latest"]
-
-directories:
-  prompts: "prompts"
-
-workers: 3
-
-prompts:
-  system:
-    target_include: ["sys_freysa_act_1.yaml", "sys_freysa_act_2.json"]
-  user:
-    target_include:
-      ["user_freysa_act_1_winner.yaml", "user_freysa_act_2_winner.json"]
-```
-
-## Usage
-
-Run the testing framework:
-
-```bash
-uv run simple.py
-```
-
-### Expected Output
-
-The system will:
-
-1. Load and combine prompts based on configuration
-2. Execute prompts against all configured models in parallel
-3. Display formatted results including:
-   - Prompt ID and model name
-   - Token usage statistics
-   - Model responses
-   - Tool calls and their arguments
-
-Example output:
-
-```
-Loaded 4 prompts
-1. sys_freysa_act_1+user_freysa_act_2_winner
-2. sys_freysa_act_2+user_freysa_act_2_winner
-...
-
->> Prompt: sys_freysa_act_1+user_freysa_act_2_winner
->> Model: openai/gpt-4o-mini
->> Tokens: in=2788 out=67 total=2855
->> Tools:
-* approveTransfer
-    {
-      "explanation": "..."
-    }
-...
-```
-
-## Project Structure
-
-```
-.
-├── .env                    # API keys
-├── config.yaml            # Configuration file
-├── simple.py             # Main testing script
-└── prompts/              # Prompt directory
-    ├── system/          # System prompts
-    └── user/           # User prompts
-```
-
-## Key Components
-
-### Prompt Loading
-
-```59:153:simple.py
 def load_prompts(user_prompts_dir: str, system_prompts_dir: str) -> list[Prompt]:
     """Load and combine prompts from user and system directories.
 
@@ -158,6 +86,7 @@ def load_prompts(user_prompts_dir: str, system_prompts_dir: str) -> list[Prompt]
     system_exclude = (
         config.get("prompts", {}).get("system", {}).get("target_exclude", [])
     )
+
     # Get list of user prompt files
     user_files = [
         f
@@ -214,17 +143,16 @@ def load_prompts(user_prompts_dir: str, system_prompts_dir: str) -> list[Prompt]
                     tools=tools,
                     temperature=prompt_settings["temperature"],
                     top_p=prompt_settings["top_p"],
-
+                )
+            )
 
     print(f"Loaded \033[36m{len(prompts)}\033[0m prompts")
     for i, prompt in enumerate(prompts):
         print(f"{i+1}. {prompt.prompt_id}")
 
-```
+    return prompts
 
-### Parallel Execution
 
-```156:210:simple.py
 def send_prompt_par(prompt: Prompt) -> list[Generation]:
     """Send a prompt to multiple models in parallel.
 
@@ -276,13 +204,41 @@ def send_prompt_par(prompt: Prompt) -> list[Generation]:
                         prompt_id=prompt.prompt_id,
                         model=model,
                         response={"error": str(e)},
+                    )
+                )
+
+    return results
 
 
-```
+def _read_prompt_from_file(
+    file_path: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Load prompt data from a YAML or JSON file.
 
-### Response Formatting
+    Args:
+        file_path: Path to the prompt file (.yaml, .yml, or .json)
 
-```242:289:simple.py
+    Returns:
+        Dictionary containing prompt data with at minimum a 'messages' key
+        containing the conversation messages. May also include 'tools' and
+        other configuration.
+
+    Raises:
+        ValueError: If file extension is not .yaml, .yml, or .json
+        yaml.YAMLError: If YAML file is malformed
+        json.JSONDecodeError: If JSON file is malformed
+        FileNotFoundError: If file doesn't exist
+    """
+    if file_path.endswith((".yaml", ".yml")):
+        with open(file_path, "r") as f:
+            return yaml.safe_load(f)
+    elif file_path.endswith(".json"):
+        with open(file_path, "r") as f:
+            return json.load(f)
+    else:
+        raise ValueError("Unsupported file format. Please provide a YAML or JSON file.")
+
+
 def _format_generation(generation: Generation) -> str:
     """Formats a generation result with ANSI color codes for terminal display.
 
@@ -330,17 +286,71 @@ def _format_generation(generation: Generation) -> str:
     else:
         output.append("\033[31mNone\033[0m")
 
-    output.append("\033[90m"
-```
+    output.append("\033[90m" + "-" * 50 + "\033[0m")
+    return "\n".join(output)
 
-## Contributing
 
-Feel free to submit issues and enhancement requests!
+def _send_to_model(
+    prompt: Prompt,
+    model: str,
+    max_retries: int,
+    backoff_factor: int,
+    delay: int,
+) -> ModelResponse:
+    """Send a prompt to a specific model with retry logic.
 
-## License
+    Attempts to send the prompt multiple times in case of failures, with
+    configurable retry behavior.
 
-[Your chosen license]
+    Args:
+        prompt: Prompt object containing messages and configuration
+        model: Name/identifier of the target model
+        max_retries: Maximum number of retry attempts
+        backoff_factor: Multiplier for exponential backoff between retries
+        delay: Initial delay in seconds before first retry
 
----
+    Returns:
+        ModelResponse object containing the completion, token usage, and
+        any tool calls made by the model
 
-For more information about the Freysa puzzle game, visit [freysa.ai](https://www.freysa.ai/genesis/faq).
+    Raises:
+        Exception: Propagates any unhandled exceptions from the model API
+            after max retries are exhausted
+
+    Note:
+        Currently implements basic retry without actual backoff/delay.
+        Future versions will implement proper exponential backoff.
+    """
+    for _ in range(max_retries):
+        response = completion(
+            model=model,
+            messages=prompt.messages,
+            tools=prompt.tools,
+            tool_choice="auto" if prompt.tools else None,
+            temperature=prompt.temperature,
+            top_p=prompt.top_p,
+            **{
+                "custom_llm_provider": "anthropic" if "claude" in model else None,
+            },
+        )
+
+        return response
+
+
+def main():
+    all_results = []
+
+    prompts = load_prompts(PROMPTS_USER_DIR, PROMPTS_SYSTEM_DIR)
+    print(f"\nLoaded \033[36m{len(prompts)}\033[0m prompts")
+
+    for prompt in prompts:
+        result = send_prompt_par(prompt)
+        all_results.extend(result)
+    for generation in all_results:
+        print(_format_generation(generation))
+
+    print(f"Generated \033[36m{len(all_results)}\033[0m responses")
+
+
+if __name__ == "__main__":
+    main()
