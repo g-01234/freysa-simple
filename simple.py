@@ -346,7 +346,7 @@ def main():
     for prompt in prompts:
         result = send_prompt_par(prompt)
         all_results.extend(result)
-    for generation in all_results:
+    for generation in sorted(all_results, key=lambda x: x.prompt_id):
         print(_format_generation(generation))
 
     print(f"Generated \033[36m{len(all_results)}\033[0m responses")
